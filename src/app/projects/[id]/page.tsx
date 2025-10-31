@@ -26,6 +26,7 @@ export default async function ProjectDetailPage({
 	if (!project) {
 		notFound();
 	}
+	console.error("project", project);
 
 	const { tasks } = await getTasksByProjectId(id);
 
