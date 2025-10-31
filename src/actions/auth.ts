@@ -10,19 +10,18 @@ import { cookies } from "next/headers";
  * and must be called from client components using aws-amplify/auth
  */
 export async function getCurrentUserAction() {
-	try {
-		const user = await runWithAmplifyServerContext({
-			nextServerContext: { cookies },
-			operation: (contextSpec) => getCurrentUser(contextSpec),
-		});
+  try {
+    const user = await runWithAmplifyServerContext({
+      nextServerContext: { cookies },
+      operation: (contextSpec) => getCurrentUser(contextSpec),
+    });
 
-		return { user, isAuthenticated: true };
-	} catch (error: unknown) {
-		console.error("Get current user error:", error);
-		return {
-			user: null,
-			isAuthenticated: false,
-			error: (error as Error).message || "Failed to get current user",
-		};
-	}
+    return { user, isAuthenticated: true };
+  } catch (error: unknown) {
+    return {
+      user: null,
+      isAuthenticated: false,
+      error: (error as Error).message || "Failed to get current user",
+    };
+  }
 }

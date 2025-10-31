@@ -2,41 +2,107 @@
 
 import { cookieBasedClient } from "@/utils/amplifyDataClient";
 import { revalidatePath } from "next/cache";
+import { trace } from "@opentelemetry/api";
 
 type ProjectStatus = "ACTIVE" | "COMPLETED" | "ARCHIVED";
 
 export async function getProjects() {
-	try {
-		const { data: projects, errors } =
-			await cookieBasedClient.models.Project.list({
-				selectionSet: [
-					"id",
-					"name",
-					"description",
-					"status",
-					"createdAt",
-					"updatedAt",
-				],
-			});
+	const tracer = trace.getTracer("projects-actions");
 
-		if (errors) {
-			console.error("Get projects errors:", errors);
-			return {
-				success: false,
-				error: "Failed to fetch projects",
-				projects: [],
-			};
+	return await tracer.startActiveSpan(
+		"projects.getProjects",
+		async (span) => {
+			try {
+				span.setAttribute("action.name", "getProjects");
+				span.setAttribute("action.type", "read");
+				span.setAttribute("resource.type", "project");
+				span.addEvent("projects.fetch.started");
+
+				const { data: projects, errors } =
+					await cookieBasedClient.models.Project.list({
+						selectionSet: [
+							"id",
+							"name",
+							"description",
+							"status",
+							"createdAt",
+							"updatedAt",
+						],
+					});
+
+				if (errors) {
+					span.setStatus({
+						code: 2, // ERROR
+						message: "Failed to fetch projects",
+					});
+					span.recordException(new Error(JSON.stringify(errors)));
+					span.addEvent("projects.fetch.errors", {
+						errorCount: errors.length.toString(),
+					});
+					console.error("Get projects errors:", errors);
+
+					span.end();
+					return {
+						success: false,
+						error: "Failed to fetch projects",
+						projects: [],
+					};
+				}
+
+				const projectsList = projects || [];
+				span.setAttribute("projects.count", projectsList.length);
+
+				// Calculate status breakdown
+				const statusCounts = projectsList.reduce((acc, p) => {
+					acc[p.status] = (acc[p.status] || 0) + 1;
+					return acc;
+				}, {} as Record<string, number>);
+
+				span.setAttribute("projects.active", statusCounts.ACTIVE || 0);
+				span.setAttribute(
+					"projects.completed",
+					statusCounts.COMPLETED || 0
+				);
+				span.setAttribute(
+					"projects.archived",
+					statusCounts.ARCHIVED || 0
+				);
+
+				span.addEvent("projects.fetch.completed", {
+					projectsCount: projectsList.length.toString(),
+					activeCount: (statusCounts.ACTIVE || 0).toString(),
+				});
+				span.setStatus({ code: 1 }); // OK
+
+				span.end();
+				return { success: true, projects: projectsList };
+			} catch (error: unknown) {
+				span.setStatus({
+					code: 2, // ERROR
+					message:
+						error instanceof Error
+							? error.message
+							: "Unknown error",
+				});
+				span.recordException(error as Error);
+				span.addEvent("projects.fetch.error", {
+					error:
+						error instanceof Error
+							? error.message
+							: "Unknown error",
+				});
+				console.error("Get projects error:", error);
+
+				span.end();
+				return {
+					success: false,
+					error:
+						(error as Error).message || "Failed to fetch projects",
+					projects: [],
+				};
+			}
 		}
-
-		return { success: true, projects: projects || [] };
-	} catch (error: unknown) {
-		console.error("Get projects error:", error);
-		return {
-			success: false,
-			error: (error as Error).message || "Failed to fetch projects",
-			projects: [],
-		};
-	}
+	);
 }
 
 export async function getProjectById(id: string) {

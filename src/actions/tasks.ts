@@ -2,6 +2,7 @@
 
 import { cookieBasedClient } from "@/utils/amplifyDataClient";
 import { revalidatePath } from "next/cache";
+import { trace } from "@opentelemetry/api";
 
 type TaskStatus = "TODO" | "IN_PROGRESS" | "COMPLETED";
 type TaskPriority = "LOW" | "MEDIUM" | "HIGH";
@@ -225,38 +226,96 @@ export async function deleteTask(id: string, projectId: string) {
 }
 
 export async function getAllTasks() {
-	try {
-		const { data: tasks, errors } =
-			await cookieBasedClient.models.Task.list({
-				selectionSet: [
-					"id",
-					"title",
-					"description",
-					"status",
-					"priority",
-					"dueDate",
-					"createdAt",
-					"updatedAt",
-					"projectId",
-				],
-			});
+	const tracer = trace.getTracer("tasks-actions");
+	
+	return await tracer.startActiveSpan("tasks.getAllTasks", async (span) => {
+		try {
+			span.setAttribute("action.name", "getAllTasks");
+			span.setAttribute("action.type", "read");
+			span.setAttribute("resource.type", "task");
+			span.addEvent("tasks.fetch.started");
 
-		if (errors) {
-			console.error("Get all tasks errors:", errors);
+			const { data: tasks, errors } =
+				await cookieBasedClient.models.Task.list({
+					selectionSet: [
+						"id",
+						"title",
+						"description",
+						"status",
+						"priority",
+						"dueDate",
+						"createdAt",
+						"updatedAt",
+						"projectId",
+					],
+				});
+
+			if (errors) {
+				span.setStatus({
+					code: 2, // ERROR
+					message: "Failed to fetch tasks",
+				});
+				span.recordException(new Error(JSON.stringify(errors)));
+				span.addEvent("tasks.fetch.errors", {
+					errorCount: errors.length.toString(),
+				});
+				console.error("Get all tasks errors:", errors);
+				
+				span.end();
+				return {
+					success: false,
+					error: "Failed to fetch tasks",
+					tasks: [],
+				};
+			}
+
+			const tasksList = tasks || [];
+			span.setAttribute("tasks.count", tasksList.length);
+			
+			// Calculate status breakdown
+			const statusCounts = tasksList.reduce((acc, t) => {
+				acc[t.status] = (acc[t.status] || 0) + 1;
+				return acc;
+			}, {} as Record<string, number>);
+			
+			// Calculate priority breakdown
+			const priorityCounts = tasksList.reduce((acc, t) => {
+				acc[t.priority] = (acc[t.priority] || 0) + 1;
+				return acc;
+			}, {} as Record<string, number>);
+
+			span.setAttribute("tasks.todo", statusCounts.TODO || 0);
+			span.setAttribute("tasks.in_progress", statusCounts.IN_PROGRESS || 0);
+			span.setAttribute("tasks.completed", statusCounts.COMPLETED || 0);
+			span.setAttribute("tasks.priority.low", priorityCounts.LOW || 0);
+			span.setAttribute("tasks.priority.medium", priorityCounts.MEDIUM || 0);
+			span.setAttribute("tasks.priority.high", priorityCounts.HIGH || 0);
+
+			span.addEvent("tasks.fetch.completed", {
+				tasksCount: tasksList.length.toString(),
+				completedCount: (statusCounts.COMPLETED || 0).toString(),
+			});
+			span.setStatus({ code: 1 }); // OK
+
+			span.end();
+			return { success: true, tasks: tasksList };
+		} catch (error: unknown) {
+			span.setStatus({
+				code: 2, // ERROR
+				message: error instanceof Error ? error.message : "Unknown error",
+			});
+			span.recordException(error as Error);
+			span.addEvent("tasks.fetch.error", {
+				error: error instanceof Error ? error.message : "Unknown error",
+			});
+			console.error("Get all tasks error:", error);
+			
+			span.end();
 			return {
 				success: false,
-				error: "Failed to fetch tasks",
+				error: (error as Error).message || "Failed to fetch tasks",
 				tasks: [],
 			};
 		}
-
-		return { success: true, tasks: tasks || [] };
-	} catch (error: unknown) {
-		console.error("Get all tasks error:", error);
-		return {
-			success: false,
-			error: (error as Error).message || "Failed to fetch tasks",
-			tasks: [],
-		};
-	}
+	});
 }

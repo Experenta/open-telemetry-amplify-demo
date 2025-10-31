@@ -2,6 +2,7 @@
 
 import { cookieBasedClient } from "@/utils/amplifyDataClient";
 import { revalidatePath } from "next/cache";
+import { trace } from "@opentelemetry/api";
 
 export async function getSubtasksByTaskId(taskId: string) {
 	try {
@@ -208,35 +209,87 @@ export async function deleteSubtask(id: string, projectId?: string) {
 }
 
 export async function getAllSubtasks() {
-	try {
-		const { data: subtasks, errors } =
-			await cookieBasedClient.models.Subtask.list({
-				selectionSet: [
-					"id",
-					"title",
-					"isCompleted",
-					"createdAt",
-					"updatedAt",
-					"taskId",
-				],
-			});
+	const tracer = trace.getTracer("subtasks-actions");
+	
+	return await tracer.startActiveSpan("subtasks.getAllSubtasks", async (span) => {
+		try {
+			span.setAttribute("action.name", "getAllSubtasks");
+			span.setAttribute("action.type", "read");
+			span.setAttribute("resource.type", "subtask");
+			span.addEvent("subtasks.fetch.started");
 
-		if (errors) {
-			console.error("Get all subtasks errors:", errors);
+			const { data: subtasks, errors } =
+				await cookieBasedClient.models.Subtask.list({
+					selectionSet: [
+						"id",
+						"title",
+						"isCompleted",
+						"createdAt",
+						"updatedAt",
+						"taskId",
+					],
+				});
+
+			if (errors) {
+				span.setStatus({
+					code: 2, // ERROR
+					message: "Failed to fetch subtasks",
+				});
+				span.recordException(new Error(JSON.stringify(errors)));
+				span.addEvent("subtasks.fetch.errors", {
+					errorCount: errors.length.toString(),
+				});
+				console.error("Get all subtasks errors:", errors);
+				
+				span.end();
+				return {
+					success: false,
+					error: "Failed to fetch subtasks",
+					subtasks: [],
+				};
+			}
+
+			const subtasksList = subtasks || [];
+			span.setAttribute("subtasks.count", subtasksList.length);
+			
+			// Calculate completion breakdown
+			const completedCount = subtasksList.filter((s) => s.isCompleted).length;
+			const pendingCount = subtasksList.length - completedCount;
+
+			span.setAttribute("subtasks.completed", completedCount);
+			span.setAttribute("subtasks.pending", pendingCount);
+			
+			const completionRate = subtasksList.length > 0 
+				? (completedCount / subtasksList.length) * 100 
+				: 0;
+			span.setAttribute("subtasks.completion_rate", completionRate);
+
+			span.addEvent("subtasks.fetch.completed", {
+				subtasksCount: subtasksList.length.toString(),
+				completedCount: completedCount.toString(),
+				completionRate: completionRate.toFixed(2),
+			});
+			span.setStatus({ code: 1 }); // OK
+
+			span.end();
+			return { success: true, subtasks: subtasksList };
+		} catch (error: unknown) {
+			span.setStatus({
+				code: 2, // ERROR
+				message: error instanceof Error ? error.message : "Unknown error",
+			});
+			span.recordException(error as Error);
+			span.addEvent("subtasks.fetch.error", {
+				error: error instanceof Error ? error.message : "Unknown error",
+			});
+			console.error("Get all subtasks error:", error);
+			
+			span.end();
 			return {
 				success: false,
-				error: "Failed to fetch subtasks",
+				error: (error as Error).message || "Failed to fetch subtasks",
 				subtasks: [],
 			};
 		}
-
-		return { success: true, subtasks: subtasks || [] };
-	} catch (error: unknown) {
-		console.error("Get all subtasks error:", error);
-		return {
-			success: false,
-			error: (error as Error).message || "Failed to fetch subtasks",
-			subtasks: [],
-		};
-	}
+	});
 }
