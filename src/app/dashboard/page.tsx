@@ -12,8 +12,10 @@ import { ProductivityTrend } from "@/components/dashboard/ProductivityTrend";
 import { trace } from "@opentelemetry/api";
 
 export default async function DashboardPage() {
+	// OpenTelemetry: tracer para la página del dashboard
 	const tracer = trace.getTracer("dashboard-page");
 
+	// OpenTelemetry: iniciar un span activo que envuelve la renderización de la página
 	return await tracer.startActiveSpan(
 		"dashboard.page.render",
 		async (span) => {
@@ -50,6 +52,14 @@ export default async function DashboardPage() {
 				const projects = projectsResult.projects || [];
 				const tasks = tasksResult.tasks || [];
 				const subtasks = subtasksResult.subtasks || [];
+
+				// Normalizar / castear projects a la forma esperada por los componentes UI.
+				// Opción B: adaptación rápida — convertir a `any` (o a una interfaz más específica)
+				// si prefieres tipado más estricto, reemplaza `any` con el tipo generado adecuado.
+				const projectsForComponents = projects as unknown as any;
+				// También castear tasks y subtasks para satisfacer los tipos de las props de los componentes.
+				const tasksForComponents = tasks as unknown as any;
+				const subtasksForComponents = subtasks as unknown as any;
 
 				span.addEvent("dashboard.data.fetch.completed", {
 					projectsCount: projects.length.toString(),
@@ -96,17 +106,17 @@ export default async function DashboardPage() {
 							</div>
 
 							<DashboardStats
-								projects={projects}
-								tasks={tasks}
-								subtasks={subtasks}
+								projects={projectsForComponents}
+								tasks={tasksForComponents}
+								subtasks={subtasksForComponents}
 							/>
 
 							<div className="grid gap-6 md:grid-cols-2">
-								<TaskStatusChart tasks={tasks} />
-								<ProjectProgressChart projects={projects} />
+								<TaskStatusChart tasks={tasksForComponents} />
+								<ProjectProgressChart projects={projectsForComponents} />
 							</div>
 
-							<ProductivityTrend tasks={tasks} />
+							<ProductivityTrend tasks={tasksForComponents} />
 						</div>
 					</MainLayout>
 				);

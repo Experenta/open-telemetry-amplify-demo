@@ -15,10 +15,14 @@ import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 import type { Schema } from '@/amplify/data/resource';
 
-type Project = Schema['Project']['type'];
+//type Project = Schema['Project']['type'];
+type ProjectDialogData = Pick<
+    Schema['Project']['type'],
+    'id' | 'name' // Solo necesitamos 'id' para la acción y 'name' para el UI.
+>;
 
 interface DeleteProjectDialogProps {
-  project: Project;
+  project: ProjectDialogData;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }

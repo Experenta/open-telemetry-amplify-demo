@@ -24,10 +24,16 @@ import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 import type { Schema } from '@/amplify/data/resource';
 
-type Project = Schema['Project']['type'];
+//type Project = Schema['Project']['type'];
+type ProjectDialogData = Pick<
+    Schema['Project']['type'],
+    'id' | 'name' | 'description' | 'status' // Solo los campos usados/editables
+    // Incluyo 'id' porque lo usas en updateProject(project.id, ...)
+    // Puedes incluir más campos escalares como 'createdAt'/'updatedAt' si se requieren en otros diálogos.
+>;
 
 interface EditProjectDialogProps {
-  project: Project;
+  project: ProjectDialogData;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }

@@ -2,7 +2,7 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { FolderKanban, ListTodo, CheckCircle2, TrendingUp } from "lucide-react";
-import { Schema } from "../../../amplify/data/resource";
+import { Schema } from "../../amplify/data/resource";
 
 type Project = Schema["Project"]["type"];
 type Task = Schema["Task"]["type"];

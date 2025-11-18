@@ -10,7 +10,12 @@ import type { Schema } from '@/amplify/data/resource';
 import { EditProjectDialog } from './EditProjectDialog';
 import { DeleteProjectDialog } from './DeleteProjectDialog';
 
-type Project = Schema['Project']['type'];
+//type Project = Schema['Project']['type'];
+
+type ProjectHeaderData = Pick<
+  Schema['Project']['type'],
+  'id' | 'name' | 'description' | 'status' | 'createdAt' | 'updatedAt'
+>;
 
 const statusColors = {
   ACTIVE: 'bg-green-100 text-green-800',
@@ -18,7 +23,7 @@ const statusColors = {
   ARCHIVED: 'bg-gray-100 text-gray-800',
 };
 
-export function ProjectHeader({ project }: { project: Project }) {
+export function ProjectHeader({ project }: { project: ProjectHeaderData }) {
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
