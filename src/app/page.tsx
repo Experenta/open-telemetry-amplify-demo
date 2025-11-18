@@ -18,7 +18,7 @@ export default async function Home() {
 	if (isAuthenticated) {
 		redirect("/projects");
 	}
-
+	console.log("isAuthenticated", isAuthenticated);
 	return (
 		<MainLayout>
 			<div className="min-h-[80vh] flex flex-col items-center justify-center">
