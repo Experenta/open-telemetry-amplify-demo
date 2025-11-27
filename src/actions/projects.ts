@@ -2,46 +2,54 @@
 
 import { cookieBasedClient } from "@/utils/amplifyDataClient";
 import { revalidatePath } from "next/cache";
-import {
-	trace,
-	metrics,
-	Span,
-	SpanStatusCode,
-	Counter,
-} from "@opentelemetry/api";
-import { meterProvider } from "@/lib/meter-provider"; // Asegúrate de que esta importación sea correcta
+import { trace, metrics, Span, SpanStatusCode } from "@opentelemetry/api";
+import { meterProvider } from "@/lib/meter-provider";
+import { logs, SeverityNumber } from "@opentelemetry/api-logs";
 
+/**
+ * Tipos de datos para proyectos
+ */
 type ProjectStatus = "ACTIVE" | "COMPLETED" | "ARCHIVED";
 
-// ============================================================================
-// Métricas Personalizadas (Mantenidas y reutilizadas)
-// ============================================================================
-
+/**
+ * Inicialización de métricas personalizadas
+ */
 const meter = metrics.getMeter("projects-events");
 
+/**
+ * Contador único para eventos completados/errores de proyectos (solo CRUD, no lectura)
+ */
 const projectEventsCounter = meter.createCounter("projects.events", {
-	description: "Business events in project operations",
+	description: "Business events in project operations (created, updated, deleted, errors)",
 	unit: "1",
 });
 
-const projectCreationPhaseCounter = meter.createCounter(
-	"projects.creation.phase",
-	{
-		description: "Project creation lifecycle phases",
-		unit: "1",
-	}
-);
-
-const projectUpdatePhaseCounter = meter.createCounter("projects.update.phase", {
-	description: "Project update lifecycle phases",
-	unit: "1",
+/**
+ * Histogramas de latencia por tipo de operación
+ */
+const createProjectLatency = meter.createHistogram("projects.create.latency", {
+	description: "Latency of create project operations",
+	unit: "ms",
 });
 
-const projectFetchPhaseCounter = meter.createCounter("projects.fetch.phase", {
-	description: "Project fetch lifecycle phases",
-	unit: "1",
+const updateProjectLatency = meter.createHistogram("projects.update.latency", {
+	description: "Latency of update project operations",
+	unit: "ms",
 });
 
+const fetchProjectsLatency = meter.createHistogram("projects.fetch.latency", {
+	description: "Latency of fetch project operations",
+	unit: "ms",
+});
+
+const deleteProjectLatency = meter.createHistogram("projects.delete.latency", {
+	description: "Latency of delete project operations",
+	unit: "ms",
+});
+
+/**
+ * Histograma general de tiempo de procesamiento
+ */
 const projectProcessingTime = meter.createHistogram(
 	"projects.processing.time",
 	{
@@ -50,15 +58,39 @@ const projectProcessingTime = meter.createHistogram(
 	}
 );
 
-// ============================================================================
-// Utilitarios para Atributos y Métricas Comunes
-// ============================================================================
+/**
+ * Logger centralizado para eventos
+ */
+const logger = logs.getLogger("projects-actions", "1.0.0");
 
+/**
+ * Registra eventos en logs con nivel de severidad especificado
+ */
+function logIssue(
+	severity: SeverityNumber,
+	severityText: string,
+	body: string,
+	attributes: Record<string, any>,
+) {
+	logger.emit({
+		severityNumber: severity,
+		severityText: severityText,
+		body: body,
+		attributes: attributes,
+	});
+}
+
+/**
+ * Interfaz para contexto de datos en spans
+ */
 interface ProjectSpanContextData {
 	projectId?: string;
 	projectStatus?: ProjectStatus;
 }
 
+/**
+ * Obtiene atributos comunes para todos los spans de proyectos
+ */
 function getCommonAttributes(data: ProjectSpanContextData) {
 	return {
 		"service.name": "project-management",
@@ -69,10 +101,10 @@ function getCommonAttributes(data: ProjectSpanContextData) {
 	};
 }
 
-function getActionAttributes(
-	actionName: string,
-	actionType: "create" | "read" | "update" | "delete"
-) {
+/**
+ * Obtiene atributos específicos de la acción realizada
+ */
+function getActionAttributes(actionName: string, actionType: "create" | "read" | "update" | "delete") {
 	return {
 		"action.name": actionName,
 		"action.type": actionType,
@@ -80,18 +112,13 @@ function getActionAttributes(
 	};
 }
 
-// ----------------------------------------------------------------------------
-// Utilidad para iniciar y registrar métricas (para operaciones con temporización)
-// ----------------------------------------------------------------------------
-
+/**
+ * Registra el inicio de una operación en el span
+ */
 function recordStartEvent(
 	span: Span,
 	operationName: string,
-	context: {
-		projectId?: string;
-		projectStatus?: ProjectStatus;
-		phaseCounter: Counter;
-	}
+	context: { projectId?: string; projectStatus?: ProjectStatus }
 ) {
 	const commonAttrs = getCommonAttributes(context);
 	const actionAttrs = getActionAttributes(
@@ -117,36 +144,91 @@ function recordStartEvent(
 		"resource.type": "project",
 		"action.type": actionAttrs["action.type"],
 	});
-
-	// 📊 MÉTRICAS: Registrar evento de inicio
-	context.phaseCounter.add(1, {
-		phase: "started",
-		operation: operationName,
-		...(context.projectStatus && {
-			"project.status": context.projectStatus,
-		}),
-	});
-
-	projectEventsCounter.add(1, {
-		"event.name": `project.${actionAttrs["action.type"]}.started`,
-		operation: operationName,
-		"project.id": context.projectId || "none",
-	});
 }
 
-// ----------------------------------------------------------------------------
-// Utilidad para completar y registrar métricas
-// ----------------------------------------------------------------------------
-
+/**
+ * Registra la finalización exitosa de una operación de escritura (CREATE, UPDATE, DELETE)
+ * Incrementa el contador de eventos una única vez por operación completada
+ * NO se usa para operaciones READ
+ */
 function recordCompleteEvent(
 	span: Span,
 	operationName: string,
 	context: {
 		projectId?: string;
 		projectStatus?: ProjectStatus;
-		phaseCounter: Counter;
 		startTime: number;
-		attributes?: Record<string, string | number>;
+		attributes?: Record<string, any>;
+	}
+) {
+	const processingTime = Date.now() - context.startTime;
+	const actionType = operationName.includes("create")
+		? "create"
+		: operationName.includes("update")
+		? "update"
+		: "delete";
+
+	span.setAttributes({
+		"operation.phase": "completed",
+		"operation.status": "success",
+		"processing_time_ms": processingTime,
+		...context.attributes,
+	});
+	span.setStatus({ code: SpanStatusCode.OK });
+
+	span.addEvent("operation.phase.completed", {
+		"operation.phase": "completed",
+		"processing_time_ms": processingTime,
+		...context.attributes,
+	});
+
+	/**
+	 * Registro único del evento completado en el contador
+	 * Solo para operaciones de escritura (CREATE, UPDATE, DELETE)
+	 */
+	projectEventsCounter.add(1, {
+		"event.name": `project.${actionType}.completed`,
+		"event.phase": "completed",
+		"operation": operationName,
+		"action.type": actionType,
+		"project.id": context.projectId || "none",
+		"processing_time_ms": processingTime.toString(),
+		...(context.projectStatus && { "project.status": context.projectStatus }),
+	});
+
+	projectProcessingTime.record(processingTime, {
+		"operation": operationName,
+		"project.id": context.projectId || "none",
+		...(context.projectStatus && { "project.status": context.projectStatus }),
+	});
+
+	if (operationName === "createProject") {
+		createProjectLatency.record(processingTime, {
+			"project.status": context.projectStatus || "unknown",
+		});
+	} else if (operationName === "updateProject") {
+		updateProjectLatency.record(processingTime, {
+			"project.status": context.projectStatus || "unknown",
+		});
+	} else if (operationName === "deleteProject") {
+		deleteProjectLatency.record(processingTime, {
+			"project.id": context.projectId || "none",
+		});
+	}
+}
+
+/**
+ * Registra latencia de operaciones de lectura (READ)
+ * Sin incrementar el contador de eventos de negocio
+ */
+function recordReadLatency(
+	span: Span,
+	operationName: string,
+	context: {
+		projectId?: string;
+		projectStatus?: ProjectStatus;
+		startTime: number;
+		attributes?: Record<string, any>;
 	}
 ) {
 	const processingTime = Date.now() - context.startTime;
@@ -154,52 +236,37 @@ function recordCompleteEvent(
 	span.setAttributes({
 		"operation.phase": "completed",
 		"operation.status": "success",
+		"processing_time_ms": processingTime,
 		...context.attributes,
 	});
 	span.setStatus({ code: SpanStatusCode.OK });
 
 	span.addEvent("operation.phase.completed", {
 		"operation.phase": "completed",
-		processing_time_ms: processingTime,
+		"processing_time_ms": processingTime,
 		...context.attributes,
 	});
 
-	// 📊 MÉTRICAS: Registrar evento de completado y tiempo
-	context.phaseCounter.add(1, {
-		phase: "completed",
-		operation: operationName,
-		...(context.projectStatus && {
-			"project.status": context.projectStatus,
-		}),
-	});
-
-	projectEventsCounter.add(1, {
-		"event.name": `project.${
-			operationName.includes("create")
-				? "create"
-				: operationName.includes("read")
-				? "fetch"
-				: operationName.includes("update")
-				? "update"
-				: "delete"
-		}.completed`,
-		operation: operationName,
-		"project.id": context.projectId || "none",
-	});
-
+	/**
+	 * Registra latencia SIN incrementar el contador de eventos
+	 * Las operaciones READ no son "eventos de negocio", solo observabilidad
+	 */
 	projectProcessingTime.record(processingTime, {
-		operation: operationName,
+		"operation": operationName,
 		"project.id": context.projectId || "none",
-		...(context.projectStatus && {
-			"project.status": context.projectStatus,
-		}),
+		...(context.projectStatus && { "project.status": context.projectStatus }),
+	});
+
+	fetchProjectsLatency.record(processingTime, {
+		"operation": operationName,
+		"project.id": context.projectId || "none",
 	});
 }
 
-// ----------------------------------------------------------------------------
-// Utilidad para manejar y registrar errores
-// ----------------------------------------------------------------------------
-
+/**
+ * Registra errores en operaciones de escritura
+ * Incrementa el contador de eventos una única vez por operación fallida
+ */
 function recordErrorEvent(
 	span: Span,
 	operationName: string,
@@ -207,13 +274,16 @@ function recordErrorEvent(
 	context: {
 		projectId?: string;
 		projectStatus?: ProjectStatus;
-		phaseCounter: Counter;
 		errorType: "database" | "runtime";
 	}
 ) {
-	const errorMessage =
-		error instanceof Error ? error.message : "Unknown error";
+	const errorMessage = error instanceof Error ? error.message : "Unknown error";
 	const commonAttrs = getCommonAttributes(context);
+	const actionType = operationName.includes("create")
+		? "create"
+		: operationName.includes("update")
+		? "update"
+		: "delete";
 
 	span.setStatus({ code: SpanStatusCode.ERROR, message: errorMessage });
 	span.setAttributes({
@@ -224,41 +294,39 @@ function recordErrorEvent(
 		"error.message": errorMessage,
 	});
 	span.recordException(error as Error);
+
 	span.addEvent("operation.phase.error", {
 		"error.type": context.errorType,
 		"error.message": errorMessage,
 	});
 
-	// 📊 MÉTRICAS: Registrar evento de error/excepción
-	context.phaseCounter.add(1, {
-		phase: context.errorType === "database" ? "error" : "exception",
-		operation: operationName,
-		...(context.projectStatus && {
-			"project.status": context.projectStatus,
-		}),
+	/**
+	 * Registro único del evento de error en el contador
+	 * Solo para operaciones de escritura
+	 */
+	projectEventsCounter.add(1, {
+		"event.name": `project.${actionType}.exception`,
+		"event.phase": "error",
+		"operation": operationName,
+		"action.type": actionType,
+		"project.id": context.projectId || "none",
+		"error.type": context.errorType,
+		"error.message": errorMessage,
+		...(context.projectStatus && { "project.status": context.projectStatus }),
 	});
 
-	projectEventsCounter.add(1, {
-		"event.name": `project.${
-			operationName.includes("create")
-				? "create"
-				: operationName.includes("read")
-				? "fetch"
-				: operationName.includes("update")
-				? "update"
-				: "delete"
-		}.exception`,
-		operation: operationName,
-		"project.id": context.projectId || "none",
+	logIssue(SeverityNumber.ERROR, "ERROR", `${operationName} failed`, {
+		"error.message": errorMessage,
+		"error.type": context.errorType,
+		"project.id": context.projectId,
 	});
 
 	console.error(`${operationName} error:`, error);
 }
 
-// ============================================================================
-// OPERACIÓN: getProjects (READ - Global)
-// ============================================================================
-
+/**
+ * Obtiene todos los proyectos del sistema (READ - No incrementa contador)
+ */
 export async function getProjects() {
 	const tracer = trace.getTracer("projects-actions");
 
@@ -268,9 +336,7 @@ export async function getProjects() {
 			const eventStartTime = Date.now();
 
 			try {
-				recordStartEvent(span, "getProjects", {
-					phaseCounter: projectFetchPhaseCounter,
-				});
+				recordStartEvent(span, "getProjects", {});
 
 				const { data: projects, errors } =
 					await cookieBasedClient.models.Project.list({
@@ -285,17 +351,16 @@ export async function getProjects() {
 					});
 
 				if (errors) {
-					recordErrorEvent(
-						span,
-						"getProjects",
-						new Error(JSON.stringify(errors)),
-						{
-							phaseCounter: projectFetchPhaseCounter,
-							errorType: "database",
-						}
-					);
+					span.setStatus({ code: SpanStatusCode.ERROR, message: "Database error" });
+					span.setAttributes({
+						"operation.phase": "error",
+						"operation.status": "failed",
+						"error.type": "database",
+					});
+					span.recordException(new Error(JSON.stringify(errors)));
 
 					span.end();
+					await meterProvider.forceFlush();
 					return {
 						success: false,
 						error: "Failed to fetch projects",
@@ -313,63 +378,55 @@ export async function getProjects() {
 					{} as Record<string, number>
 				);
 
-				recordCompleteEvent(span, "getProjects", {
+				recordReadLatency(span, "getProjects", {
 					startTime: eventStartTime,
-					phaseCounter: projectFetchPhaseCounter,
 					attributes: {
 						"query.result.count": projectsList.length.toString(),
-						"projects.active": statusCounts["ACTIVE"] || 0,
-						"projects.completed": statusCounts["COMPLETED"] || 0,
-						"projects.archived": statusCounts["ARCHIVED"] || 0,
+						"projects.active": (statusCounts["ACTIVE"] || 0).toString(),
+						"projects.completed": (statusCounts["COMPLETED"] || 0).toString(),
+						"projects.archived": (statusCounts["ARCHIVED"] || 0).toString(),
 					},
 				});
 
 				span.end();
+				await meterProvider.forceFlush();
 				return { success: true, projects: projectsList };
 			} catch (error: unknown) {
-				recordErrorEvent(span, "getProjects", error, {
-					phaseCounter: projectFetchPhaseCounter,
-					errorType: "runtime",
+				span.setStatus({ code: SpanStatusCode.ERROR, message: (error as Error).message });
+				span.setAttributes({
+					"operation.phase": "error",
+					"operation.status": "failed",
+					"error.type": "runtime",
 				});
+				span.recordException(error as Error);
 
 				span.end();
+				await meterProvider.forceFlush();
 				return {
 					success: false,
-					error:
-						(error as Error).message || "Failed to fetch projects",
+					error: (error as Error).message || "Failed to fetch projects",
 					projects: [],
 				};
-			} finally {
-				await meterProvider.forceFlush();
 			}
 		}
 	);
 }
 
-// ============================================================================
-// OPERACIÓN: getProjectById (READ - Individual)
-// ============================================================================
-
+/**
+ * Obtiene un proyecto específico por su ID (READ - No incrementa contador)
+ */
 export async function getProjectById(id: string) {
 	const tracer = trace.getTracer("projects-actions");
 
 	return await tracer.startActiveSpan(
 		"projects.getProjectById",
 		async (span) => {
-			try {
-				const commonAttrs = getCommonAttributes({ projectId: id });
-				const actionAttrs = getActionAttributes(
-					"getProjectById",
-					"read"
-				);
+			const eventStartTime = Date.now();
 
-				span.setAttributes({
-					...commonAttrs,
-					...actionAttrs,
-					"operation.phase": "started",
-					"operation.status": "pending",
+			try {
+				recordStartEvent(span, "getProjectById", {
+					projectId: id,
 				});
-				span.addEvent("operation.phase.started");
 
 				const { data: project, errors } =
 					await cookieBasedClient.models.Project.get(
@@ -387,17 +444,16 @@ export async function getProjectById(id: string) {
 					);
 
 				if (errors) {
-					recordErrorEvent(
-						span,
-						"getProjectById",
-						new Error(JSON.stringify(errors)),
-						{
-							projectId: id,
-							phaseCounter: projectFetchPhaseCounter, // Usar fetch counter para lectura
-							errorType: "database",
-						}
-					);
+					span.setStatus({ code: SpanStatusCode.ERROR, message: "Database error" });
+					span.setAttributes({
+						"operation.phase": "error",
+						"operation.status": "failed",
+						"error.type": "database",
+					});
+					span.recordException(new Error(JSON.stringify(errors)));
+
 					span.end();
+					await meterProvider.forceFlush();
 					return {
 						success: false,
 						error: "Failed to fetch project",
@@ -406,7 +462,6 @@ export async function getProjectById(id: string) {
 				}
 
 				if (!project) {
-					// Aunque no es un error de DB, es un error de negocio/no encontrado.
 					span.setStatus({
 						code: SpanStatusCode.ERROR,
 						message: "Project not found",
@@ -416,6 +471,7 @@ export async function getProjectById(id: string) {
 						"error.type": "not_found",
 					});
 					span.end();
+					await meterProvider.forceFlush();
 					return {
 						success: false,
 						error: "Project not found",
@@ -423,28 +479,32 @@ export async function getProjectById(id: string) {
 					};
 				}
 
-				span.setAttributes({
-					"project.status": project.status || "unknown",
-					"operation.phase": "completed",
-					"operation.status": "success",
-				});
-				span.setStatus({ code: SpanStatusCode.OK });
-				span.addEvent("operation.phase.completed");
-
-				span.end();
-				return { success: true, error: "", project: project };
-			} catch (error: unknown) {
-				recordErrorEvent(span, "getProjectById", error, {
+				recordReadLatency(span, "getProjectById", {
 					projectId: id,
-					phaseCounter: projectFetchPhaseCounter,
-					errorType: "runtime",
+					projectStatus: project.status as ProjectStatus,
+					startTime: eventStartTime,
+					attributes: {
+						"project.status": project.status,
+					},
 				});
 
 				span.end();
+				await meterProvider.forceFlush();
+				return { success: true, project };
+			} catch (error: unknown) {
+				span.setStatus({ code: SpanStatusCode.ERROR, message: (error as Error).message });
+				span.setAttributes({
+					"operation.phase": "error",
+					"operation.status": "failed",
+					"error.type": "runtime",
+				});
+				span.recordException(error as Error);
+
+				span.end();
+				await meterProvider.forceFlush();
 				return {
 					success: false,
-					error:
-						(error as Error).message || "Failed to fetch project",
+					error: (error as Error).message || "Failed to fetch project",
 					project: null,
 				};
 			}
@@ -452,19 +512,28 @@ export async function getProjectById(id: string) {
 	);
 }
 
-// ============================================================================
-// OPERACIÓN: createProject (CREATE)
-// ============================================================================
-
+/**
+ * Crea un nuevo proyecto (CREATE - Incrementa contador)
+ */
 export async function createProject(formData: FormData) {
 	const name = formData.get("name") as string;
 	const description = formData.get("description") as string;
 	const status = (formData.get("status") as ProjectStatus) || "ACTIVE";
+
 	const tracer = trace.getTracer("projects-actions");
 
 	if (!name?.trim()) {
+		logIssue(SeverityNumber.WARN, "WARN", "Project name validation failed", {
+			"validation.field": "name",
+			"validation.error": "Project name is required",
+		});
 		return { success: false, error: "Project name is required" };
 	}
+
+	logIssue(SeverityNumber.INFO, "INFO", "Starting project creation", {
+		"project.name": name.trim(),
+		"project.status": status,
+	});
 
 	return await tracer.startActiveSpan(
 		"projects.createProject",
@@ -474,7 +543,6 @@ export async function createProject(formData: FormData) {
 			try {
 				recordStartEvent(span, "createProject", {
 					projectStatus: status,
-					phaseCounter: projectCreationPhaseCounter,
 				});
 
 				const { data: project, errors } =
@@ -505,7 +573,6 @@ export async function createProject(formData: FormData) {
 						new Error(JSON.stringify(errors)),
 						{
 							projectStatus: status,
-							phaseCounter: projectCreationPhaseCounter,
 							errorType: "database",
 						}
 					);
@@ -522,10 +589,15 @@ export async function createProject(formData: FormData) {
 					projectId: project?.id,
 					projectStatus: status,
 					startTime: eventStartTime,
-					phaseCounter: projectCreationPhaseCounter,
 					attributes: {
 						"project.name": name.trim(),
 					},
+				});
+
+				logIssue(SeverityNumber.INFO, "INFO", "Project created successfully", {
+					"project.id": project?.id || "unknown",
+					"project.name": name.trim(),
+					"project.status": status,
 				});
 
 				span.end();
@@ -535,7 +607,6 @@ export async function createProject(formData: FormData) {
 			} catch (error: unknown) {
 				recordErrorEvent(span, "createProject", error, {
 					projectStatus: status,
-					phaseCounter: projectCreationPhaseCounter,
 					errorType: "runtime",
 				});
 
@@ -543,27 +614,37 @@ export async function createProject(formData: FormData) {
 				await meterProvider.forceFlush();
 				return {
 					success: false,
-					error:
-						(error as Error).message || "Failed to create project",
+					error: (error as Error).message || "Failed to create project",
 				};
 			}
 		}
 	);
 }
 
-// ============================================================================
-// OPERACIÓN: updateProject (UPDATE)
-// ============================================================================
-
+/**
+ * Actualiza un proyecto existente (UPDATE - Incrementa contador)
+ */
 export async function updateProject(id: string, formData: FormData) {
 	const name = formData.get("name") as string;
 	const description = formData.get("description") as string;
 	const status = formData.get("status") as ProjectStatus;
+
 	const tracer = trace.getTracer("projects-actions");
 
 	if (!name?.trim()) {
+		logIssue(SeverityNumber.WARN, "WARN", "Project name validation failed", {
+			"validation.field": "name",
+			"validation.error": "Project name is required",
+			"project.id": id,
+		});
 		return { success: false, error: "Project name is required" };
 	}
+
+	logIssue(SeverityNumber.INFO, "INFO", "Starting project update", {
+		"project.id": id,
+		"project.name": name.trim(),
+		"project.status": status,
+	});
 
 	return await tracer.startActiveSpan(
 		"projects.updateProject",
@@ -574,7 +655,6 @@ export async function updateProject(id: string, formData: FormData) {
 				recordStartEvent(span, "updateProject", {
 					projectId: id,
 					projectStatus: status,
-					phaseCounter: projectUpdatePhaseCounter,
 				});
 
 				const { data: project, errors } =
@@ -606,12 +686,12 @@ export async function updateProject(id: string, formData: FormData) {
 						{
 							projectId: id,
 							projectStatus: status,
-							phaseCounter: projectUpdatePhaseCounter,
 							errorType: "database",
 						}
 					);
 
 					span.end();
+					await meterProvider.forceFlush();
 					return {
 						success: false,
 						error: "Failed to update project",
@@ -622,73 +702,55 @@ export async function updateProject(id: string, formData: FormData) {
 					projectId: id,
 					projectStatus: status,
 					startTime: eventStartTime,
-					phaseCounter: projectUpdatePhaseCounter,
 					attributes: {
 						"project.name": name.trim(),
 					},
 				});
 
+				logIssue(SeverityNumber.INFO, "INFO", "Project updated successfully", {
+					"project.id": id,
+					"project.name": name.trim(),
+					"project.status": status,
+				});
+
 				span.end();
 				revalidatePath("/projects");
 				revalidatePath(`/projects/${id}`);
+				await meterProvider.forceFlush();
 				return { success: true, project };
 			} catch (error: unknown) {
 				recordErrorEvent(span, "updateProject", error, {
 					projectId: id,
 					projectStatus: status,
-					phaseCounter: projectUpdatePhaseCounter,
 					errorType: "runtime",
 				});
 
 				span.end();
+				await meterProvider.forceFlush();
 				return {
 					success: false,
-					error:
-						(error as Error).message || "Failed to update project",
+					error: (error as Error).message || "Failed to update project",
 				};
 			}
 		}
 	);
 }
 
-// ============================================================================
-// OPERACIÓN: deleteProject (DELETE)
-// ============================================================================
-
+/**
+ * Elimina un proyecto existente (DELETE - Incrementa contador)
+ */
 export async function deleteProject(id: string) {
 	const tracer = trace.getTracer("projects-actions");
 
 	return await tracer.startActiveSpan(
 		"projects.deleteProject",
 		async (span) => {
+			const eventStartTime = Date.now();
+
 			try {
-				// Aquí no tenemos el status del proyecto, solo el ID
-				const commonAttrs = getCommonAttributes({ projectId: id });
-				const actionAttrs = getActionAttributes(
-					"deleteProject",
-					"delete"
-				);
-
-				span.setAttributes({
-					...commonAttrs,
-					...actionAttrs,
-					"operation.phase": "started",
-					"operation.status": "pending",
+				recordStartEvent(span, "deleteProject", {
+					projectId: id,
 				});
-				span.addEvent("operation.phase.started");
-
-				// Nota: Usamos projectUpdatePhaseCounter para la métrica ya que no tienes un deleteCounter específico.
-				// Podrías crear uno, pero por coherencia con el update/fetch se usa uno existente si no se quiere añadir más.
-				projectUpdatePhaseCounter.add(1, {
-					phase: "started",
-					operation: "deleteProject",
-				});
-				projectEventsCounter.add(1, {
-					"event.name": "project.delete.started",
-					operation: "deleteProject",
-					"project.id": id,
-				});
-				const eventStartTime = Date.now();
 
 				const { errors } =
 					await cookieBasedClient.models.Project.delete({ id });
@@ -700,12 +762,12 @@ export async function deleteProject(id: string) {
 						new Error(JSON.stringify(errors)),
 						{
 							projectId: id,
-							phaseCounter: projectUpdatePhaseCounter, // Usamos el update/write counter
 							errorType: "database",
 						}
 					);
 
 					span.end();
+					await meterProvider.forceFlush();
 					return {
 						success: false,
 						error: "Failed to delete project",
@@ -715,28 +777,26 @@ export async function deleteProject(id: string) {
 				recordCompleteEvent(span, "deleteProject", {
 					projectId: id,
 					startTime: eventStartTime,
-					phaseCounter: projectUpdatePhaseCounter,
 					attributes: {
-						// Atributos de finalización
 						"project.deleted.id": id,
 					},
 				});
 
 				span.end();
 				revalidatePath("/projects");
+				await meterProvider.forceFlush();
 				return { success: true };
 			} catch (error: unknown) {
 				recordErrorEvent(span, "deleteProject", error, {
 					projectId: id,
-					phaseCounter: projectUpdatePhaseCounter,
 					errorType: "runtime",
 				});
 
 				span.end();
+				await meterProvider.forceFlush();
 				return {
 					success: false,
-					error:
-						(error as Error).message || "Failed to delete project",
+					error: (error as Error).message || "Failed to delete project",
 				};
 			}
 		}

@@ -18,7 +18,8 @@ const resource: Resource = resourceFromAttributes({
 
 // Exportador de métricas
 const metricExporter = new OTLPMetricExporter({
-	url: "http://localhost:4318/v1/metrics", // Cambia si es otro endpoint
+	//url: "http://localhost:4318/v1/metrics", // Cambia si es otro endpoint
+	url: "https://signoz.digexperenta.com/v1/traces"
 });
 
 // Protección contra doble inicialización

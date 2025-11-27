@@ -19,7 +19,8 @@ const resource = resourceFromAttributes({
 });
 
 const logExporter = new OTLPLogExporter({
-    url: "http://localhost:4318/v1/logs",
+    //url: "http://localhost:4318/v1/logs",
+    url: "https://signoz.digexperenta.com/v1/traces",
     headers: {},
 });
 

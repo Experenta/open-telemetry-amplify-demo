@@ -6,10 +6,9 @@ import { trace, metrics, Span, SpanStatusCode } from "@opentelemetry/api";
 import { meterProvider } from "@/lib/meter-provider";
 import { logs, SeverityNumber } from "@opentelemetry/api-logs";
 
-// ============================================================================
-// Tipos de Datos
-// ============================================================================
-
+/**
+ * Tipos de datos para tareas
+ */
 type TaskStatus = "TODO" | "IN_PROGRESS" | "COMPLETED";
 type TaskPriority = "LOW" | "MEDIUM" | "HIGH";
 
@@ -25,43 +24,58 @@ const TASK_SELECTION_SET = [
     "projectId",
 ] as const;
 
-// ============================================================================
-// Métricas Personalizadas (Coherente con projects.ts)
-// ============================================================================
-
+/**
+ * Inicialización de métricas personalizadas
+ */
 const meter = metrics.getMeter("tasks-events");
 
+/**
+ * Contador único para eventos completados/errores de tareas
+ */
 const taskEventsCounter = meter.createCounter("tasks.events", {
-    description: "Business events in task operations",
+    description: "Business events in task operations (completed, error)",
     unit: "1",
 });
 
-const taskCreationPhaseCounter = meter.createCounter("tasks.creation.phase", {
-    description: "Task creation lifecycle phases",
-    unit: "1",
+/**
+ * Histogramas de latencia por tipo de operación
+ */
+const createTaskLatency = meter.createHistogram("tasks.create.latency", {
+    description: "Latency of create task operations",
+    unit: "ms",
 });
 
-const taskUpdatePhaseCounter = meter.createCounter("tasks.update.phase", {
-    description: "Task update lifecycle phases",
-    unit: "1",
+const updateTaskLatency = meter.createHistogram("tasks.update.latency", {
+    description: "Latency of update task operations",
+    unit: "ms",
 });
 
-const taskFetchPhaseCounter = meter.createCounter("tasks.fetch.phase", {
-    description: "Task fetch lifecycle phases",
-    unit: "1",
+const fetchTasksLatency = meter.createHistogram("tasks.fetch.latency", {
+    description: "Latency of fetch task operations",
+    unit: "ms",
 });
 
+const deleteTaskLatency = meter.createHistogram("tasks.delete.latency", {
+    description: "Latency of delete task operations",
+    unit: "ms",
+});
+
+/**
+ * Histograma general de tiempo de procesamiento
+ */
 const taskProcessingTime = meter.createHistogram("tasks.processing.time", {
     description: "Time between start and completion events",
     unit: "ms",
 });
 
-// ============================================================================
-// Logger (Coherente con tasks.ts actual)
-// ============================================================================
-
+/**
+ * Logger centralizado para eventos
+ */
 const logger = logs.getLogger("tasks-actions", "1.0.0");
 
+/**
+ * Registra eventos en logs con nivel de severidad especificado
+ */
 function logIssue(
     severity: SeverityNumber,
     severityText: string,
@@ -76,10 +90,9 @@ function logIssue(
     });
 }
 
-// ============================================================================
-// Utilitarios para Atributos y Métricas Comunes
-// ============================================================================
-
+/**
+ * Interfaz para contexto de datos en spans
+ */
 interface TaskSpanContextData {
     projectId?: string;
     taskId?: string;
@@ -87,6 +100,9 @@ interface TaskSpanContextData {
     taskPriority?: TaskPriority;
 }
 
+/**
+ * Obtiene atributos comunes para todos los spans de tareas
+ */
 function getCommonAttributes(data: TaskSpanContextData) {
     return {
         "service.name": "project-management",
@@ -100,6 +116,9 @@ function getCommonAttributes(data: TaskSpanContextData) {
     };
 }
 
+/**
+ * Obtiene atributos específicos de la acción realizada
+ */
 function getActionAttributes(actionName: string, actionType: "create" | "read" | "update" | "delete") {
     return {
         "action.name": actionName,
@@ -108,14 +127,13 @@ function getActionAttributes(actionName: string, actionType: "create" | "read" |
     };
 }
 
-// ============================================================================
-// Utilidad para iniciar y registrar métricas
-// ============================================================================
-
+/**
+ * Registra el inicio de una operación en el span
+ */
 function recordStartEvent(
     span: Span,
     operationName: string,
-    context: { projectId?: string; taskId?: string; taskStatus?: TaskStatus; taskPriority?: TaskPriority; phaseCounter: any; }
+    context: { projectId?: string; taskId?: string; taskStatus?: TaskStatus; taskPriority?: TaskPriority; }
 ) {
     const commonAttrs = getCommonAttributes(context);
     const actionAttrs = getActionAttributes(
@@ -135,36 +153,27 @@ function recordStartEvent(
         "resource.type": "task",
         "action.type": actionAttrs["action.type"],
     });
-
-    // 📊 MÉTRICAS
-    context.phaseCounter.add(1, {
-        "phase": "started",
-        "operation": operationName,
-        ...(context.taskStatus && { "task.status": context.taskStatus }),
-    });
-
-    taskEventsCounter.add(1, {
-        "event.name": `task.${actionAttrs["action.type"]}.started`,
-        "operation": operationName,
-        "task.id": context.taskId || "none",
-        "project.id": context.projectId || "none",
-    });
 }
 
-// ============================================================================
-// Utilidad para completar y registrar métricas
-// ============================================================================
-
+/**
+ * Registra la finalización exitosa de una operación
+ * Incrementa el contador de eventos una única vez por operación completada
+ */
 function recordCompleteEvent(
     span: Span,
     operationName: string,
-    context: { projectId?: string; taskId?: string; taskStatus?: TaskStatus; taskPriority?: TaskPriority; phaseCounter: any; startTime: number; attributes?: Record<string, any> }
+    context: { projectId?: string; taskId?: string; taskStatus?: TaskStatus; taskPriority?: TaskPriority; startTime: number; attributes?: Record<string, any> }
 ) {
     const processingTime = Date.now() - context.startTime;
+    const actionType = operationName.includes("create") ? "create" 
+        : operationName.includes("read") ? "fetch" 
+        : operationName.includes("update") ? "update" 
+        : "delete";
 
     span.setAttributes({
         "operation.phase": "completed",
         "operation.status": "success",
+        "processing_time_ms": processingTime,
         ...context.attributes,
     });
     span.setStatus({ code: SpanStatusCode.OK });
@@ -175,18 +184,19 @@ function recordCompleteEvent(
         ...context.attributes,
     });
 
-    // 📊 MÉTRICAS
-    context.phaseCounter.add(1, {
-        "phase": "completed",
-        "operation": operationName,
-        ...(context.taskStatus && { "task.status": context.taskStatus }),
-    });
-
+    /**
+     * Registro único del evento completado en el contador
+     */
     taskEventsCounter.add(1, {
-        "event.name": `task.${operationName.includes("create") ? "create" : operationName.includes("read") ? "fetch" : operationName.includes("update") ? "update" : "delete"}.completed`,
+        "event.name": `task.${actionType}.completed`,
+        "event.phase": "completed",
         "operation": operationName,
+        "action.type": actionType,
         "task.id": context.taskId || "none",
         "project.id": context.projectId || "none",
+        "processing_time_ms": processingTime.toString(),
+        ...(context.taskStatus && { "task.status": context.taskStatus }),
+        ...(context.taskPriority && { "task.priority": context.taskPriority }),
     });
 
     taskProcessingTime.record(processingTime, {
@@ -195,20 +205,49 @@ function recordCompleteEvent(
         "project.id": context.projectId || "none",
         ...(context.taskStatus && { "task.status": context.taskStatus }),
     });
+
+    if (operationName === "createTask") {
+        createTaskLatency.record(processingTime, {
+            "project.id": context.projectId || "none",
+            "task.priority": context.taskPriority || "unknown",
+        });
+    } else if (operationName === "updateTask") {
+        updateTaskLatency.record(processingTime, {
+            "project.id": context.projectId || "none",
+            "task.status": context.taskStatus || "unknown",
+        });
+    } else if (operationName === "deleteTask") {
+        deleteTaskLatency.record(processingTime, {
+            "project.id": context.projectId || "none",
+        });
+    } else if (
+        operationName === "getTasksByProjectId" ||
+        operationName === "getTaskById" ||
+        operationName === "getAllTasks"
+    ) {
+        fetchTasksLatency.record(processingTime, {
+            "operation": operationName,
+            "project.id": context.projectId || "none",
+        });
+    }
 }
 
-// ============================================================================
-// Utilidad para manejar y registrar errores
-// ============================================================================
-
+/**
+ * Registra errores en operaciones
+ * Incrementa el contador de eventos una única vez por operación fallida
+ */
 function recordErrorEvent(
     span: Span,
     operationName: string,
     error: unknown,
-    context: { projectId?: string; taskId?: string; taskStatus?: TaskStatus; taskPriority?: TaskPriority; phaseCounter: any; errorType: "database" | "runtime" }
+    context: { projectId?: string; taskId?: string; taskStatus?: TaskStatus; taskPriority?: TaskPriority; errorType: "database" | "runtime" }
 ) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     const commonAttrs = getCommonAttributes(context);
+    const actionType = operationName.includes("create") ? "create" 
+        : operationName.includes("read") ? "fetch" 
+        : operationName.includes("update") ? "update" 
+        : "delete";
 
     span.setStatus({ code: SpanStatusCode.ERROR, message: errorMessage });
     span.setAttributes({
@@ -219,26 +258,28 @@ function recordErrorEvent(
         "error.message": errorMessage,
     });
     span.recordException(error as Error);
+
     span.addEvent("operation.phase.error", {
         "error.type": context.errorType,
         "error.message": errorMessage,
     });
 
-    // 📊 MÉTRICAS
-    context.phaseCounter.add(1, {
-        "phase": context.errorType === "database" ? "error" : "exception",
-        "operation": operationName,
-        ...(context.taskStatus && { "task.status": context.taskStatus }),
-    });
-
+    /**
+     * Registro único del evento de error en el contador
+     */
     taskEventsCounter.add(1, {
-        "event.name": `task.${operationName.includes("create") ? "create" : operationName.includes("read") ? "fetch" : operationName.includes("update") ? "update" : "delete"}.exception`,
+        "event.name": `task.${actionType}.exception`,
+        "event.phase": "error",
         "operation": operationName,
+        "action.type": actionType,
         "task.id": context.taskId || "none",
         "project.id": context.projectId || "none",
+        "error.type": context.errorType,
+        "error.message": errorMessage,
+        ...(context.taskStatus && { "task.status": context.taskStatus }),
+        ...(context.taskPriority && { "task.priority": context.taskPriority }),
     });
 
-    // 🪵 LOG
     logIssue(SeverityNumber.ERROR, "ERROR", `${operationName} failed`, {
         "error.message": errorMessage,
         "error.type": context.errorType,
@@ -249,10 +290,9 @@ function recordErrorEvent(
     console.error(`${operationName} error:`, error);
 }
 
-// ============================================================================
-// OPERACIÓN: getTasksByProjectId (READ)
-// ============================================================================
-
+/**
+ * Obtiene todas las tareas de un proyecto específico
+ */
 export async function getTasksByProjectId(projectId: string) {
     const tracer = trace.getTracer("tasks-actions");
 
@@ -264,7 +304,6 @@ export async function getTasksByProjectId(projectId: string) {
             try {
                 recordStartEvent(span, "getTasksByProjectId", {
                     projectId,
-                    phaseCounter: taskFetchPhaseCounter,
                 });
 
                 const { data: tasks, errors } =
@@ -276,11 +315,11 @@ export async function getTasksByProjectId(projectId: string) {
                 if (errors) {
                     recordErrorEvent(span, "getTasksByProjectId", new Error(JSON.stringify(errors)), {
                         projectId,
-                        phaseCounter: taskFetchPhaseCounter,
                         errorType: "database",
                     });
 
                     span.end();
+                    await meterProvider.forceFlush();
                     return {
                         success: false,
                         error: "Failed to fetch tasks",
@@ -304,7 +343,6 @@ export async function getTasksByProjectId(projectId: string) {
                 recordCompleteEvent(span, "getTasksByProjectId", {
                     projectId,
                     startTime: eventStartTime,
-                    phaseCounter: taskFetchPhaseCounter,
                     attributes: {
                         "query.result.count": tasksList.length.toString(),
                         "tasks.todo": statusCounts.TODO || 0,
@@ -322,7 +360,6 @@ export async function getTasksByProjectId(projectId: string) {
             } catch (error: unknown) {
                 recordErrorEvent(span, "getTasksByProjectId", error, {
                     projectId,
-                    phaseCounter: taskFetchPhaseCounter,
                     errorType: "runtime",
                 });
 
@@ -338,27 +375,21 @@ export async function getTasksByProjectId(projectId: string) {
     );
 }
 
-// ============================================================================
-// OPERACIÓN: getTaskById (READ)
-// ============================================================================
-
+/**
+ * Obtiene una tarea específica por su ID
+ */
 export async function getTaskById(id: string) {
     const tracer = trace.getTracer("tasks-actions");
 
     return await tracer.startActiveSpan(
         "tasks.getTaskById",
         async (span) => {
-            try {
-                const commonAttrs = getCommonAttributes({ taskId: id });
-                const actionAttrs = getActionAttributes("getTaskById", "read");
+            const eventStartTime = Date.now();
 
-                span.setAttributes({
-                    ...commonAttrs,
-                    ...actionAttrs,
-                    "operation.phase": "started",
-                    "operation.status": "pending",
+            try {
+                recordStartEvent(span, "getTaskById", {
+                    taskId: id,
                 });
-                span.addEvent("operation.phase.started");
 
                 const { data: task, errors } =
                     await cookieBasedClient.models.Task.get(
@@ -369,10 +400,10 @@ export async function getTaskById(id: string) {
                 if (errors) {
                     recordErrorEvent(span, "getTaskById", new Error(JSON.stringify(errors)), {
                         taskId: id,
-                        phaseCounter: taskFetchPhaseCounter,
                         errorType: "database",
                     });
                     span.end();
+                    await meterProvider.forceFlush();
                     return { success: false, error: "Failed to fetch task", task: null };
                 }
 
@@ -383,28 +414,32 @@ export async function getTaskById(id: string) {
                         "error.type": "not_found",
                     });
                     span.end();
+                    await meterProvider.forceFlush();
                     return { success: false, error: "Task not found", task: null };
                 }
 
-                span.setAttributes({
-                    "task.status": task.status || "unknown",
-                    "task.priority": task.priority || "unknown",
-                    "operation.phase": "completed",
-                    "operation.status": "success",
+                recordCompleteEvent(span, "getTaskById", {
+                    taskId: id,
+                    taskStatus: task.status as TaskStatus,
+                    taskPriority: task.priority as TaskPriority,
+                    startTime: eventStartTime,
+                    attributes: {
+                        "task.status": task.status,
+                        "task.priority": task.priority,
+                    },
                 });
-                span.setStatus({ code: SpanStatusCode.OK });
-                span.addEvent("operation.phase.completed");
 
                 span.end();
+                await meterProvider.forceFlush();
                 return { success: true, task };
             } catch (error: unknown) {
                 recordErrorEvent(span, "getTaskById", error, {
                     taskId: id,
-                    phaseCounter: taskFetchPhaseCounter,
                     errorType: "runtime",
                 });
 
                 span.end();
+                await meterProvider.forceFlush();
                 return {
                     success: false,
                     error: (error as Error).message || "Failed to fetch task",
@@ -415,10 +450,9 @@ export async function getTaskById(id: string) {
     );
 }
 
-// ============================================================================
-// OPERACIÓN: createTask (CREATE)
-// ============================================================================
-
+/**
+ * Crea una nueva tarea
+ */
 export async function createTask(formData: FormData) {
     const projectId = formData.get("projectId") as string;
     const title = formData.get("title") as string;
@@ -457,7 +491,6 @@ export async function createTask(formData: FormData) {
                     projectId,
                     taskStatus: status,
                     taskPriority: priority,
-                    phaseCounter: taskCreationPhaseCounter,
                 });
 
                 const { data: task, errors } =
@@ -480,7 +513,6 @@ export async function createTask(formData: FormData) {
                         projectId,
                         taskStatus: status,
                         taskPriority: priority,
-                        phaseCounter: taskCreationPhaseCounter,
                         errorType: "database",
                     });
 
@@ -495,7 +527,6 @@ export async function createTask(formData: FormData) {
                     taskStatus: status,
                     taskPriority: priority,
                     startTime: eventStartTime,
-                    phaseCounter: taskCreationPhaseCounter,
                     attributes: {
                         "task.title": title.trim(),
                     },
@@ -516,7 +547,6 @@ export async function createTask(formData: FormData) {
                     projectId,
                     taskStatus: status,
                     taskPriority: priority,
-                    phaseCounter: taskCreationPhaseCounter,
                     errorType: "runtime",
                 });
 
@@ -531,10 +561,9 @@ export async function createTask(formData: FormData) {
     );
 }
 
-// ============================================================================
-// OPERACIÓN: updateTask (UPDATE)
-// ============================================================================
-
+/**
+ * Actualiza una tarea existente
+ */
 export async function updateTask(id: string, formData: FormData) {
     const projectId = formData.get("projectId") as string;
     const title = formData.get("title") as string;
@@ -572,7 +601,6 @@ export async function updateTask(id: string, formData: FormData) {
                     taskId: id,
                     taskStatus: status,
                     taskPriority: priority,
-                    phaseCounter: taskUpdatePhaseCounter,
                 });
 
                 const { data: task, errors } =
@@ -595,11 +623,11 @@ export async function updateTask(id: string, formData: FormData) {
                         taskId: id,
                         taskStatus: status,
                         taskPriority: priority,
-                        phaseCounter: taskUpdatePhaseCounter,
                         errorType: "database",
                     });
 
                     span.end();
+                    await meterProvider.forceFlush();
                     return { success: false, error: "Failed to update task" };
                 }
 
@@ -609,7 +637,6 @@ export async function updateTask(id: string, formData: FormData) {
                     taskStatus: status,
                     taskPriority: priority,
                     startTime: eventStartTime,
-                    phaseCounter: taskUpdatePhaseCounter,
                     attributes: {
                         "task.title": title.trim(),
                     },
@@ -626,6 +653,7 @@ export async function updateTask(id: string, formData: FormData) {
                 if (projectId) {
                     revalidatePath(`/projects/${projectId}`);
                 }
+                await meterProvider.forceFlush();
                 return { success: true, task };
             } catch (error: unknown) {
                 recordErrorEvent(span, "updateTask", error, {
@@ -633,11 +661,11 @@ export async function updateTask(id: string, formData: FormData) {
                     taskId: id,
                     taskStatus: status,
                     taskPriority: priority,
-                    phaseCounter: taskUpdatePhaseCounter,
                     errorType: "runtime",
                 });
 
                 span.end();
+                await meterProvider.forceFlush();
                 return {
                     success: false,
                     error: (error as Error).message || "Failed to update task",
@@ -647,10 +675,9 @@ export async function updateTask(id: string, formData: FormData) {
     );
 }
 
-// ============================================================================
-// OPERACIÓN: deleteTask (DELETE)
-// ============================================================================
-
+/**
+ * Elimina una tarea existente
+ */
 export async function deleteTask(id: string, projectId: string) {
     const tracer = trace.getTracer("tasks-actions");
 
@@ -660,26 +687,9 @@ export async function deleteTask(id: string, projectId: string) {
             const eventStartTime = Date.now();
 
             try {
-                const commonAttrs = getCommonAttributes({ taskId: id, projectId });
-                const actionAttrs = getActionAttributes("deleteTask", "delete");
-
-                span.setAttributes({
-                    ...commonAttrs,
-                    ...actionAttrs,
-                    "operation.phase": "started",
-                    "operation.status": "pending",
-                });
-                span.addEvent("operation.phase.started");
-
-                taskUpdatePhaseCounter.add(1, {
-                    "phase": "started",
-                    "operation": "deleteTask",
-                });
-                taskEventsCounter.add(1, {
-                    "event.name": "task.delete.started",
-                    "operation": "deleteTask",
-                    "task.id": id,
-                    "project.id": projectId,
+                recordStartEvent(span, "deleteTask", {
+                    taskId: id,
+                    projectId,
                 });
 
                 const { errors } = await cookieBasedClient.models.Task.delete({ id });
@@ -688,11 +698,11 @@ export async function deleteTask(id: string, projectId: string) {
                     recordErrorEvent(span, "deleteTask", new Error(JSON.stringify(errors)), {
                         taskId: id,
                         projectId,
-                        phaseCounter: taskUpdatePhaseCounter,
                         errorType: "database",
                     });
 
                     span.end();
+                    await meterProvider.forceFlush();
                     return { success: false, error: "Failed to delete task" };
                 }
 
@@ -700,7 +710,6 @@ export async function deleteTask(id: string, projectId: string) {
                     taskId: id,
                     projectId,
                     startTime: eventStartTime,
-                    phaseCounter: taskUpdatePhaseCounter,
                     attributes: {
                         "task.deleted.id": id,
                     },
@@ -708,16 +717,17 @@ export async function deleteTask(id: string, projectId: string) {
 
                 span.end();
                 revalidatePath(`/projects/${projectId}`);
+                await meterProvider.forceFlush();
                 return { success: true };
             } catch (error: unknown) {
                 recordErrorEvent(span, "deleteTask", error, {
                     taskId: id,
                     projectId,
-                    phaseCounter: taskUpdatePhaseCounter,
                     errorType: "runtime",
                 });
 
                 span.end();
+                await meterProvider.forceFlush();
                 return {
                     success: false,
                     error: (error as Error).message || "Failed to delete task",
@@ -727,10 +737,9 @@ export async function deleteTask(id: string, projectId: string) {
     );
 }
 
-// ============================================================================
-// OPERACIÓN: getAllTasks (READ - Global)
-// ============================================================================
-
+/**
+ * Obtiene todas las tareas del sistema
+ */
 export async function getAllTasks() {
     const tracer = trace.getTracer("tasks-actions");
 
@@ -740,9 +749,7 @@ export async function getAllTasks() {
             const eventStartTime = Date.now();
 
             try {
-                recordStartEvent(span, "getAllTasks", {
-                    phaseCounter: taskFetchPhaseCounter,
-                });
+                recordStartEvent(span, "getAllTasks", {});
 
                 const { data: tasks, errors } =
                     await cookieBasedClient.models.Task.list({
@@ -751,11 +758,11 @@ export async function getAllTasks() {
 
                 if (errors) {
                     recordErrorEvent(span, "getAllTasks", new Error(JSON.stringify(errors)), {
-                        phaseCounter: taskFetchPhaseCounter,
                         errorType: "database",
                     });
 
                     span.end();
+                    await meterProvider.forceFlush();
                     return {
                         success: false,
                         error: "Failed to fetch tasks",
@@ -778,7 +785,6 @@ export async function getAllTasks() {
 
                 recordCompleteEvent(span, "getAllTasks", {
                     startTime: eventStartTime,
-                    phaseCounter: taskFetchPhaseCounter,
                     attributes: {
                         "query.result.count": tasksList.length.toString(),
                         "tasks.todo": statusCounts.TODO || 0,
@@ -795,7 +801,6 @@ export async function getAllTasks() {
                 return { success: true, tasks: tasksList };
             } catch (error: unknown) {
                 recordErrorEvent(span, "getAllTasks", error, {
-                    phaseCounter: taskFetchPhaseCounter,
                     errorType: "runtime",
                 });
 

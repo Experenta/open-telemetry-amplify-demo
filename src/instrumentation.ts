@@ -13,7 +13,8 @@ export async function register() {
 	registerOTel({
 		serviceName: "telemetry-example",
 		traceExporter: new OTLPHttpJsonTraceExporter({
-			url: "http://localhost:4318/v1/traces",
+			//url: "http://localhost:4318/v1/traces",
+			url: "https://signoz.digexperenta.com/v1/traces",
 		}),
 	});
 }
