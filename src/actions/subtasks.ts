@@ -4,6 +4,7 @@ import { cookieBasedClient } from "@/utils/amplifyDataClient";
 import { revalidatePath } from "next/cache";
 import { trace, metrics, Span, SpanStatusCode } from "@opentelemetry/api";
 import { meterProvider } from "@/lib/meter-provider";
+import { flushTraces } from "@/lib/otel-utils";
 
 // ============================================================================
 // Métricas Personalizadas (Coherente con projects.ts)
@@ -276,6 +277,7 @@ export async function getSubtasksByTaskId(taskId: string, projectId?: string) {
 
                 span.end();
                 await meterProvider.forceFlush();
+                await flushTraces();
                 return { success: true, subtasks: subtasksList };
             } catch (error: unknown) {
                 recordErrorEvent(span, "getSubtasksByTaskId", error, {
@@ -287,6 +289,7 @@ export async function getSubtasksByTaskId(taskId: string, projectId?: string) {
 
                 span.end();
                 await meterProvider.forceFlush();
+                await flushTraces();
                 return {
                     success: false,
                     error: (error as Error).message || "Failed to fetch subtasks",
@@ -361,6 +364,7 @@ export async function createSubtask(formData: FormData) {
 
                     span.end();
                     await meterProvider.forceFlush();
+                await flushTraces();
                     return { success: false, error: "Failed to create subtask" };
                 }
 
@@ -381,6 +385,7 @@ export async function createSubtask(formData: FormData) {
                     revalidatePath(`/projects/${projectId}`);
                 }
                 await meterProvider.forceFlush();
+                await flushTraces();
                 return { success: true, subtask };
             } catch (error: unknown) {
                 recordErrorEvent(span, "createSubtask", error, {
@@ -393,6 +398,7 @@ export async function createSubtask(formData: FormData) {
 
                 span.end();
                 await meterProvider.forceFlush();
+                await flushTraces();
                 return {
                     success: false,
                     error: (error as Error).message || "Failed to create subtask",
@@ -757,6 +763,7 @@ export async function getAllSubtasks() {
 
                 span.end();
                 await meterProvider.forceFlush();
+                await flushTraces();
                 return { success: true, subtasks: subtasksList };
             } catch (error: unknown) {
                 recordErrorEvent(span, "getAllSubtasks", error, {
@@ -767,6 +774,7 @@ export async function getAllSubtasks() {
 
                 span.end();
                 await meterProvider.forceFlush();
+                await flushTraces();
                 return {
                     success: false,
                     error: (error as Error).message || "Failed to fetch subtasks",

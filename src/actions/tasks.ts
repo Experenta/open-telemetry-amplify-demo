@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { trace, metrics, Span, SpanStatusCode } from "@opentelemetry/api";
 import { meterProvider } from "@/lib/meter-provider";
 import { logs, SeverityNumber } from "@opentelemetry/api-logs";
+import { flushTraces } from "@/lib/otel-utils";
 
 /**
  * Tipos de datos para tareas
@@ -320,6 +321,7 @@ export async function getTasksByProjectId(projectId: string) {
 
                     span.end();
                     await meterProvider.forceFlush();
+                    await flushTraces();
                     return {
                         success: false,
                         error: "Failed to fetch tasks",
@@ -356,6 +358,7 @@ export async function getTasksByProjectId(projectId: string) {
 
                 span.end();
                 await meterProvider.forceFlush();
+                    await flushTraces();
                 return { success: true, tasks: tasksList };
             } catch (error: unknown) {
                 recordErrorEvent(span, "getTasksByProjectId", error, {
@@ -365,6 +368,7 @@ export async function getTasksByProjectId(projectId: string) {
 
                 span.end();
                 await meterProvider.forceFlush();
+                    await flushTraces();
                 return {
                     success: false,
                     error: (error as Error).message || "Failed to fetch tasks",
@@ -404,6 +408,7 @@ export async function getTaskById(id: string) {
                     });
                     span.end();
                     await meterProvider.forceFlush();
+                    await flushTraces();
                     return { success: false, error: "Failed to fetch task", task: null };
                 }
 
@@ -415,6 +420,7 @@ export async function getTaskById(id: string) {
                     });
                     span.end();
                     await meterProvider.forceFlush();
+                    await flushTraces();
                     return { success: false, error: "Task not found", task: null };
                 }
 
@@ -431,6 +437,7 @@ export async function getTaskById(id: string) {
 
                 span.end();
                 await meterProvider.forceFlush();
+                    await flushTraces();
                 return { success: true, task };
             } catch (error: unknown) {
                 recordErrorEvent(span, "getTaskById", error, {
@@ -440,6 +447,7 @@ export async function getTaskById(id: string) {
 
                 span.end();
                 await meterProvider.forceFlush();
+                    await flushTraces();
                 return {
                     success: false,
                     error: (error as Error).message || "Failed to fetch task",
@@ -518,6 +526,7 @@ export async function createTask(formData: FormData) {
 
                     span.end();
                     await meterProvider.forceFlush();
+                    await flushTraces();
                     return { success: false, error: "Failed to create task" };
                 }
 
@@ -541,6 +550,7 @@ export async function createTask(formData: FormData) {
                 span.end();
                 revalidatePath(`/projects/${projectId}`);
                 await meterProvider.forceFlush();
+                    await flushTraces();
                 return { success: true, task };
             } catch (error: unknown) {
                 recordErrorEvent(span, "createTask", error, {
@@ -552,6 +562,7 @@ export async function createTask(formData: FormData) {
 
                 span.end();
                 await meterProvider.forceFlush();
+                    await flushTraces();
                 return {
                     success: false,
                     error: (error as Error).message || "Failed to create task",
@@ -628,6 +639,7 @@ export async function updateTask(id: string, formData: FormData) {
 
                     span.end();
                     await meterProvider.forceFlush();
+                    await flushTraces();
                     return { success: false, error: "Failed to update task" };
                 }
 
@@ -654,6 +666,7 @@ export async function updateTask(id: string, formData: FormData) {
                     revalidatePath(`/projects/${projectId}`);
                 }
                 await meterProvider.forceFlush();
+                    await flushTraces();
                 return { success: true, task };
             } catch (error: unknown) {
                 recordErrorEvent(span, "updateTask", error, {
@@ -666,6 +679,7 @@ export async function updateTask(id: string, formData: FormData) {
 
                 span.end();
                 await meterProvider.forceFlush();
+                    await flushTraces();
                 return {
                     success: false,
                     error: (error as Error).message || "Failed to update task",
@@ -703,6 +717,7 @@ export async function deleteTask(id: string, projectId: string) {
 
                     span.end();
                     await meterProvider.forceFlush();
+                    await flushTraces();
                     return { success: false, error: "Failed to delete task" };
                 }
 
@@ -718,6 +733,7 @@ export async function deleteTask(id: string, projectId: string) {
                 span.end();
                 revalidatePath(`/projects/${projectId}`);
                 await meterProvider.forceFlush();
+                    await flushTraces();
                 return { success: true };
             } catch (error: unknown) {
                 recordErrorEvent(span, "deleteTask", error, {
@@ -728,6 +744,7 @@ export async function deleteTask(id: string, projectId: string) {
 
                 span.end();
                 await meterProvider.forceFlush();
+                    await flushTraces();
                 return {
                     success: false,
                     error: (error as Error).message || "Failed to delete task",
@@ -763,6 +780,7 @@ export async function getAllTasks() {
 
                     span.end();
                     await meterProvider.forceFlush();
+                    await flushTraces();
                     return {
                         success: false,
                         error: "Failed to fetch tasks",
@@ -798,6 +816,7 @@ export async function getAllTasks() {
 
                 span.end();
                 await meterProvider.forceFlush();
+                    await flushTraces();
                 return { success: true, tasks: tasksList };
             } catch (error: unknown) {
                 recordErrorEvent(span, "getAllTasks", error, {
@@ -806,6 +825,7 @@ export async function getAllTasks() {
 
                 span.end();
                 await meterProvider.forceFlush();
+                    await flushTraces();
                 return {
                     success: false,
                     error: (error as Error).message || "Failed to fetch tasks",

@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { trace, metrics, Span, SpanStatusCode } from "@opentelemetry/api";
 import { meterProvider } from "@/lib/meter-provider";
 import { logs, SeverityNumber } from "@opentelemetry/api-logs";
+import { flushTraces } from "@/lib/otel-utils";
 
 /**
  * Tipos de datos para proyectos
@@ -20,7 +21,8 @@ const meter = metrics.getMeter("projects-events");
  * Contador único para eventos completados/errores de proyectos (solo CRUD, no lectura)
  */
 const projectEventsCounter = meter.createCounter("projects.events", {
-	description: "Business events in project operations (created, updated, deleted, errors)",
+	description:
+		"Business events in project operations (created, updated, deleted, errors)",
 	unit: "1",
 });
 
@@ -70,7 +72,7 @@ function logIssue(
 	severity: SeverityNumber,
 	severityText: string,
 	body: string,
-	attributes: Record<string, any>,
+	attributes: Record<string, any>
 ) {
 	logger.emit({
 		severityNumber: severity,
@@ -104,7 +106,10 @@ function getCommonAttributes(data: ProjectSpanContextData) {
 /**
  * Obtiene atributos específicos de la acción realizada
  */
-function getActionAttributes(actionName: string, actionType: "create" | "read" | "update" | "delete") {
+function getActionAttributes(
+	actionName: string,
+	actionType: "create" | "read" | "update" | "delete"
+) {
 	return {
 		"action.name": actionName,
 		"action.type": actionType,
@@ -171,14 +176,14 @@ function recordCompleteEvent(
 	span.setAttributes({
 		"operation.phase": "completed",
 		"operation.status": "success",
-		"processing_time_ms": processingTime,
+		processing_time_ms: processingTime,
 		...context.attributes,
 	});
 	span.setStatus({ code: SpanStatusCode.OK });
 
 	span.addEvent("operation.phase.completed", {
 		"operation.phase": "completed",
-		"processing_time_ms": processingTime,
+		processing_time_ms: processingTime,
 		...context.attributes,
 	});
 
@@ -189,17 +194,21 @@ function recordCompleteEvent(
 	projectEventsCounter.add(1, {
 		"event.name": `project.${actionType}.completed`,
 		"event.phase": "completed",
-		"operation": operationName,
+		operation: operationName,
 		"action.type": actionType,
 		"project.id": context.projectId || "none",
-		"processing_time_ms": processingTime.toString(),
-		...(context.projectStatus && { "project.status": context.projectStatus }),
+		processing_time_ms: processingTime.toString(),
+		...(context.projectStatus && {
+			"project.status": context.projectStatus,
+		}),
 	});
 
 	projectProcessingTime.record(processingTime, {
-		"operation": operationName,
+		operation: operationName,
 		"project.id": context.projectId || "none",
-		...(context.projectStatus && { "project.status": context.projectStatus }),
+		...(context.projectStatus && {
+			"project.status": context.projectStatus,
+		}),
 	});
 
 	if (operationName === "createProject") {
@@ -236,14 +245,14 @@ function recordReadLatency(
 	span.setAttributes({
 		"operation.phase": "completed",
 		"operation.status": "success",
-		"processing_time_ms": processingTime,
+		processing_time_ms: processingTime,
 		...context.attributes,
 	});
 	span.setStatus({ code: SpanStatusCode.OK });
 
 	span.addEvent("operation.phase.completed", {
 		"operation.phase": "completed",
-		"processing_time_ms": processingTime,
+		processing_time_ms: processingTime,
 		...context.attributes,
 	});
 
@@ -252,13 +261,15 @@ function recordReadLatency(
 	 * Las operaciones READ no son "eventos de negocio", solo observabilidad
 	 */
 	projectProcessingTime.record(processingTime, {
-		"operation": operationName,
+		operation: operationName,
 		"project.id": context.projectId || "none",
-		...(context.projectStatus && { "project.status": context.projectStatus }),
+		...(context.projectStatus && {
+			"project.status": context.projectStatus,
+		}),
 	});
 
 	fetchProjectsLatency.record(processingTime, {
-		"operation": operationName,
+		operation: operationName,
 		"project.id": context.projectId || "none",
 	});
 }
@@ -277,7 +288,8 @@ function recordErrorEvent(
 		errorType: "database" | "runtime";
 	}
 ) {
-	const errorMessage = error instanceof Error ? error.message : "Unknown error";
+	const errorMessage =
+		error instanceof Error ? error.message : "Unknown error";
 	const commonAttrs = getCommonAttributes(context);
 	const actionType = operationName.includes("create")
 		? "create"
@@ -307,12 +319,14 @@ function recordErrorEvent(
 	projectEventsCounter.add(1, {
 		"event.name": `project.${actionType}.exception`,
 		"event.phase": "error",
-		"operation": operationName,
+		operation: operationName,
 		"action.type": actionType,
 		"project.id": context.projectId || "none",
 		"error.type": context.errorType,
 		"error.message": errorMessage,
-		...(context.projectStatus && { "project.status": context.projectStatus }),
+		...(context.projectStatus && {
+			"project.status": context.projectStatus,
+		}),
 	});
 
 	logIssue(SeverityNumber.ERROR, "ERROR", `${operationName} failed`, {
@@ -351,7 +365,10 @@ export async function getProjects() {
 					});
 
 				if (errors) {
-					span.setStatus({ code: SpanStatusCode.ERROR, message: "Database error" });
+					span.setStatus({
+						code: SpanStatusCode.ERROR,
+						message: "Database error",
+					});
 					span.setAttributes({
 						"operation.phase": "error",
 						"operation.status": "failed",
@@ -361,6 +378,7 @@ export async function getProjects() {
 
 					span.end();
 					await meterProvider.forceFlush();
+					await flushTraces();
 					return {
 						success: false,
 						error: "Failed to fetch projects",
@@ -382,17 +400,27 @@ export async function getProjects() {
 					startTime: eventStartTime,
 					attributes: {
 						"query.result.count": projectsList.length.toString(),
-						"projects.active": (statusCounts["ACTIVE"] || 0).toString(),
-						"projects.completed": (statusCounts["COMPLETED"] || 0).toString(),
-						"projects.archived": (statusCounts["ARCHIVED"] || 0).toString(),
+						"projects.active": (
+							statusCounts["ACTIVE"] || 0
+						).toString(),
+						"projects.completed": (
+							statusCounts["COMPLETED"] || 0
+						).toString(),
+						"projects.archived": (
+							statusCounts["ARCHIVED"] || 0
+						).toString(),
 					},
 				});
 
 				span.end();
 				await meterProvider.forceFlush();
+				await flushTraces();
 				return { success: true, projects: projectsList };
 			} catch (error: unknown) {
-				span.setStatus({ code: SpanStatusCode.ERROR, message: (error as Error).message });
+				span.setStatus({
+					code: SpanStatusCode.ERROR,
+					message: (error as Error).message,
+				});
 				span.setAttributes({
 					"operation.phase": "error",
 					"operation.status": "failed",
@@ -402,9 +430,11 @@ export async function getProjects() {
 
 				span.end();
 				await meterProvider.forceFlush();
+				await flushTraces();
 				return {
 					success: false,
-					error: (error as Error).message || "Failed to fetch projects",
+					error:
+						(error as Error).message || "Failed to fetch projects",
 					projects: [],
 				};
 			}
@@ -444,7 +474,10 @@ export async function getProjectById(id: string) {
 					);
 
 				if (errors) {
-					span.setStatus({ code: SpanStatusCode.ERROR, message: "Database error" });
+					span.setStatus({
+						code: SpanStatusCode.ERROR,
+						message: "Database error",
+					});
 					span.setAttributes({
 						"operation.phase": "error",
 						"operation.status": "failed",
@@ -454,6 +487,7 @@ export async function getProjectById(id: string) {
 
 					span.end();
 					await meterProvider.forceFlush();
+					await flushTraces();
 					return {
 						success: false,
 						error: "Failed to fetch project",
@@ -472,6 +506,7 @@ export async function getProjectById(id: string) {
 					});
 					span.end();
 					await meterProvider.forceFlush();
+					await flushTraces();
 					return {
 						success: false,
 						error: "Project not found",
@@ -490,9 +525,13 @@ export async function getProjectById(id: string) {
 
 				span.end();
 				await meterProvider.forceFlush();
+				await flushTraces();
 				return { success: true, project };
 			} catch (error: unknown) {
-				span.setStatus({ code: SpanStatusCode.ERROR, message: (error as Error).message });
+				span.setStatus({
+					code: SpanStatusCode.ERROR,
+					message: (error as Error).message,
+				});
 				span.setAttributes({
 					"operation.phase": "error",
 					"operation.status": "failed",
@@ -502,9 +541,11 @@ export async function getProjectById(id: string) {
 
 				span.end();
 				await meterProvider.forceFlush();
+				await flushTraces();
 				return {
 					success: false,
-					error: (error as Error).message || "Failed to fetch project",
+					error:
+						(error as Error).message || "Failed to fetch project",
 					project: null,
 				};
 			}
@@ -523,10 +564,15 @@ export async function createProject(formData: FormData) {
 	const tracer = trace.getTracer("projects-actions");
 
 	if (!name?.trim()) {
-		logIssue(SeverityNumber.WARN, "WARN", "Project name validation failed", {
-			"validation.field": "name",
-			"validation.error": "Project name is required",
-		});
+		logIssue(
+			SeverityNumber.WARN,
+			"WARN",
+			"Project name validation failed",
+			{
+				"validation.field": "name",
+				"validation.error": "Project name is required",
+			}
+		);
 		return { success: false, error: "Project name is required" };
 	}
 
@@ -579,6 +625,7 @@ export async function createProject(formData: FormData) {
 
 					span.end();
 					await meterProvider.forceFlush();
+					await flushTraces();
 					return {
 						success: false,
 						error: "Failed to create project",
@@ -594,15 +641,23 @@ export async function createProject(formData: FormData) {
 					},
 				});
 
-				logIssue(SeverityNumber.INFO, "INFO", "Project created successfully", {
-					"project.id": project?.id || "unknown",
-					"project.name": name.trim(),
-					"project.status": status,
-				});
+				logIssue(
+					SeverityNumber.INFO,
+					"INFO",
+					"Project created successfully",
+					{
+						"project.id": project?.id || "unknown",
+						"project.name": name.trim(),
+						"project.status": status,
+					}
+				);
 
 				span.end();
 				revalidatePath("/projects");
 				await meterProvider.forceFlush();
+				await flushTraces();
+				const tracerProvider = trace.getTracerProvider();
+				tracerProvider.getTracer("projects-actions");
 				return { success: true, project };
 			} catch (error: unknown) {
 				recordErrorEvent(span, "createProject", error, {
@@ -612,9 +667,11 @@ export async function createProject(formData: FormData) {
 
 				span.end();
 				await meterProvider.forceFlush();
+				await flushTraces();
 				return {
 					success: false,
-					error: (error as Error).message || "Failed to create project",
+					error:
+						(error as Error).message || "Failed to create project",
 				};
 			}
 		}
@@ -632,11 +689,16 @@ export async function updateProject(id: string, formData: FormData) {
 	const tracer = trace.getTracer("projects-actions");
 
 	if (!name?.trim()) {
-		logIssue(SeverityNumber.WARN, "WARN", "Project name validation failed", {
-			"validation.field": "name",
-			"validation.error": "Project name is required",
-			"project.id": id,
-		});
+		logIssue(
+			SeverityNumber.WARN,
+			"WARN",
+			"Project name validation failed",
+			{
+				"validation.field": "name",
+				"validation.error": "Project name is required",
+				"project.id": id,
+			}
+		);
 		return { success: false, error: "Project name is required" };
 	}
 
@@ -692,6 +754,7 @@ export async function updateProject(id: string, formData: FormData) {
 
 					span.end();
 					await meterProvider.forceFlush();
+					await flushTraces();
 					return {
 						success: false,
 						error: "Failed to update project",
@@ -707,16 +770,22 @@ export async function updateProject(id: string, formData: FormData) {
 					},
 				});
 
-				logIssue(SeverityNumber.INFO, "INFO", "Project updated successfully", {
-					"project.id": id,
-					"project.name": name.trim(),
-					"project.status": status,
-				});
+				logIssue(
+					SeverityNumber.INFO,
+					"INFO",
+					"Project updated successfully",
+					{
+						"project.id": id,
+						"project.name": name.trim(),
+						"project.status": status,
+					}
+				);
 
 				span.end();
 				revalidatePath("/projects");
 				revalidatePath(`/projects/${id}`);
 				await meterProvider.forceFlush();
+				await flushTraces();
 				return { success: true, project };
 			} catch (error: unknown) {
 				recordErrorEvent(span, "updateProject", error, {
@@ -727,9 +796,11 @@ export async function updateProject(id: string, formData: FormData) {
 
 				span.end();
 				await meterProvider.forceFlush();
+				await flushTraces();
 				return {
 					success: false,
-					error: (error as Error).message || "Failed to update project",
+					error:
+						(error as Error).message || "Failed to update project",
 				};
 			}
 		}
@@ -768,6 +839,7 @@ export async function deleteProject(id: string) {
 
 					span.end();
 					await meterProvider.forceFlush();
+					await flushTraces();
 					return {
 						success: false,
 						error: "Failed to delete project",
@@ -785,6 +857,7 @@ export async function deleteProject(id: string) {
 				span.end();
 				revalidatePath("/projects");
 				await meterProvider.forceFlush();
+				await flushTraces();
 				return { success: true };
 			} catch (error: unknown) {
 				recordErrorEvent(span, "deleteProject", error, {
@@ -794,9 +867,11 @@ export async function deleteProject(id: string) {
 
 				span.end();
 				await meterProvider.forceFlush();
+				await flushTraces();
 				return {
 					success: false,
-					error: (error as Error).message || "Failed to delete project",
+					error:
+						(error as Error).message || "Failed to delete project",
 				};
 			}
 		}
